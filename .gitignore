@@ -131,3 +131,17 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+.env
+.env.*
+!.env.sample
+/inserted_items
+/item_detail
+/login
+/mainpage
+/register
+/search_item
+/CICD
+/deployed_landingpage.png
+**/node_modules/
+**/build/

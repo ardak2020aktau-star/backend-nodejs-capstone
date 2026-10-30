@@ -1,0 +1,135 @@
+name: SecondChance CI/CD
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify-and-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    services:
+      mongodb:
+        image: mongo:7
+        ports:
+          - 27017:27017
+        options: >-
+          --health-cmd "mongosh --quiet --eval 'db.adminCommand({ping:1})'"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      MONGO_URL: mongodb://127.0.0.1:27017
+      MONGO_DB: secondChance
+      JWT_SECRET: ci-test-only-secret-never-use-in-production
+      PORT: 3060
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install dependencies
+        run: |
+          npm --prefix secondChance-backend ci
+          npm --prefix sentiment ci
+          npm --prefix secondChance-frontend ci
+
+      - name: Check JavaScript syntax
+        run: |
+          node --check secondChance-backend/app.js
+          node --check secondChance-backend/models/db.js
+          node --check secondChance-backend/routes/secondChanceItemsRoutes.js
+          node --check secondChance-backend/routes/searchRoutes.js
+          node --check secondChance-backend/routes/authRoutes.js
+          node --check sentiment/index.js
+
+      - name: Build frontend
+        working-directory: secondChance-frontend
+        env:
+          REACT_APP_BACKEND_URL: ''
+          CI: 'false'
+        run: npm run build
+
+      - name: Import data and start backend
+        working-directory: secondChance-backend
+        run: |
+          node util/import-mongo/index.js
+          node app.js > /tmp/secondchance-server.log 2>&1 &
+
+      - name: Test database, items, search and authentication
+        run: |
+          node <<'NODE'
+          const assert = require('node:assert/strict');
+          const base = 'http://127.0.0.1:3060';
+          async function call(path, method = 'GET', body, token) {
+            const headers = { 'Content-Type': 'application/json' };
+            if (token) headers.Authorization = 'Bearer ' + token;
+            const response = await fetch(base + path, {
+              method, headers,
+              body: body === undefined ? undefined : JSON.stringify(body)
+            });
+            assert.ok(response.ok, method + ' ' + path + ': ' + response.status);
+            return response.json();
+          }
+          (async () => {
+            let ready = false;
+            for (let i = 0; i < 30; i++) {
+              try {
+                const response = await fetch(base + '/api/secondchance/items');
+                if (response.ok) { ready = true; break; }
+              } catch {}
+              await new Promise(resolve => setTimeout(resolve, 1000));
+            }
+            assert.ok(ready, 'Backend did not start');
+            const items = await call('/api/secondchance/items');
+            assert.equal(items.length, 16);
+            console.log('MongoDB import and item listing: OK (16 documents)');
+            const item = items.find(value => value.id !== undefined && value.category);
+            assert.ok(item);
+            const detail = await call('/api/secondchance/items/' + encodeURIComponent(item.id));
+            assert.equal(String(detail.id), String(item.id));
+            console.log('Item details: OK');
+            const matches = await call('/api/secondchance/search?category=' + encodeURIComponent(item.category));
+            assert.ok(matches.length > 0);
+            assert.ok(matches.every(value => value.category.toLowerCase() === item.category.toLowerCase()));
+            console.log('Category search: OK');
+            const credentials = { email: 'ci@example.com', password: 'CI-test-password-123' };
+            const registration = await call('/api/auth/register', 'POST', {
+              ...credentials, firstName: 'CI', lastName: 'Test'
+            });
+            assert.equal(registration.user.email, credentials.email);
+            const login = await call('/api/auth/login', 'POST', credentials);
+            assert.ok(login.token);
+            const updated = await call('/api/auth/update', 'PUT', {
+              firstName: 'Updated'
+            }, login.token);
+            assert.equal(updated.user.firstName, 'Updated');
+            console.log('Registration, login and profile update: OK');
+            const landing = await fetch(base + '/home.html');
+            assert.equal(landing.status, 200);
+            assert.match(await landing.text(), /Get Started/i);
+            console.log('Landing page: OK');
+          })().catch(error => {
+            console.error(error);
+            process.exitCode = 1;
+          });
+          NODE
+
+      - name: Build application container
+        run: docker build -t secondchance:ci .
+
+      - name: Show server log
+        if: always()
+        run: cat /tmp/secondchance-server.log || true

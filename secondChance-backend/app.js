@@ -1,64 +1,49 @@
-/*jshint esversion: 8 */
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
-const pinoLogger = require('./logger');
-
+const path = require('path');
 const connectToDatabase = require('./models/db');
-const {loadData} = require("./util/import-mongo/index");
-
+const secondChanceItemsRoutes = require('./routes/secondChanceItemsRoutes');
 
 const app = express();
-app.use("*",cors());
-const port = 3060;
+const port = process.env.PORT || 3060;
 
-// Connect to MongoDB; we just do this one time
-connectToDatabase().then(() => {
-    pinoLogger.info('Connected to DB');
-})
-    .catch((e) => console.error('Failed to connect to DB', e));
-
-
+app.use(cors());
 app.use(express.json());
+app.use('/images', express.static(path.join(__dirname, 'public/images')));
 
-// Route files
+app.use('/api/secondchance/items', secondChanceItemsRoutes);
+app.use('/api/auth', require('./routes/authRoutes'));
+app.use('/api/secondchance/search', require('./routes/searchRoutes'));
 
-// authRoutes Step 2: import the authRoutes and store in a constant called authRoutes
-//{{insert code here}}
+const frontendBuild = path.join(__dirname, '../secondChance-frontend/build');
 
-// Items API Task 1: import the secondChanceItemsRoutes and store in a constant called secondChanceItemsRoutes
-//{{insert code here}}
+app.use(express.static(frontendBuild));
 
-// Search API Task 1: import the searchRoutes and store in a constant called searchRoutes
-//{{insert code here}}
-
-
-const pinoHttp = require('pino-http');
-const logger = require('./logger');
-
-app.use(pinoHttp({ logger }));
-
-// Use Routes
-// authRoutes Step 2: add the authRoutes and to the server by using the app.use() method.
-//{{insert code here}}
-
-// Items API Task 2: add the secondChanceItemsRoutes to the server by using the app.use() method.
-//{{insert code here}}
-
-// Search API Task 2: add the searchRoutes to the server by using the app.use() method.
-//{{insert code here}}
-
-
-// Global Error Handler
-app.use((err, req, res, next) => {
-    console.error(err);
-    res.status(500).send('Internal Server Error');
+app.get('*', (req, res, next) => {
+  if (req.path === '/api' || req.path.startsWith('/api/')) return next();
+  res.sendFile(path.join(frontendBuild, 'index.html'));
 });
 
-app.get("/",(req,res)=>{
-    res.send("Inside the server")
-})
+app.use((req, res) => {
+  res.status(404).json({ error: 'Route not found' });
+});
 
-app.listen(port, () => {
-    console.log(`Server running on port ${port}`);
+app.use((error, req, res, next) => {
+  const status = error.status || (error.name === 'MulterError' ? 400 : 500);
+  res.status(status).json({
+    error: status === 500 ? 'Internal Server Error' : error.message
+  });
+});
+
+async function start() {
+  await connectToDatabase();
+  app.listen(port, '0.0.0.0', () => {
+    console.log(`SecondChance server running on port ${port}`);
+  });
+}
+
+start().catch(() => {
+  console.error('Server startup failed: check MongoDB connection');
+  process.exitCode = 1;
 });

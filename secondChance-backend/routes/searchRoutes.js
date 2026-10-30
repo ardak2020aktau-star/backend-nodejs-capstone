@@ -1,42 +1,52 @@
 const express = require('express');
-const router = express.Router();
 const connectToDatabase = require('../models/db');
+const router = express.Router();
 
-// Search for gifts
+function escapeRegex(text) {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 router.get('/', async (req, res, next) => {
-    try {
-        // Task 1: Connect to MongoDB using connectToDatabase database. Remember to use the await keyword and store the connection in `db`
-        // {{insert code here}}
+  try {
+    const query = {};
 
-        const collection = db.collection("gifts");
+    for (const field of ['name', 'category', 'condition']) {
+      const value = req.query[field];
+      if (value === undefined || value === '') continue;
 
-        // Initialize the query object
-        let query = {};
+      if (typeof value !== 'string' || value.length > 200) {
+        return res.status(400).json({ error: 'Invalid ' + field });
+      }
 
-        // Add the name filter to the query if the name parameter is not empty
-        // if (/* {{insert code here}} */) {
-            query.name = { $regex: req.query.name, $options: "i" }; // Using regex for partial match, case-insensitive
-        // }
-
-        // Task 3: Add other filters to the query
-        if (req.query.category) {
-            // {{insert code here}}
-        }
-        if (req.query.condition) {
-            // {{insert code here}} 
-        }
-        if (req.query.age_years) {
-            // {{insert code here}}
-            query.age_years = { $lte: parseInt(req.query.age_years) };
-        }
-
-        // Task 4: Fetch filtered gifts using the find(query) method. Make sure to use await and store the result in the `gifts` constant
-        // {{insert code here here}}
-
-        res.json(gifts);
-    } catch (e) {
-        next(e);
+      const pattern = escapeRegex(value.trim());
+      if (pattern) {
+        query[field] = {
+          $regex: field === 'name' ? pattern : '^' + pattern + '$',
+          $options: 'i'
+        };
+      }
     }
+
+    if (req.query.age_years !== undefined) {
+      const value = req.query.age_years;
+      const age = Number(value);
+
+      if (typeof value !== 'string' || !value.trim() ||
+          !Number.isFinite(age) || age < 0) {
+        return res.status(400).json({ error: 'Invalid age_years' });
+      }
+
+      query.age_years = { $lte: age };
+    }
+
+    const db = await connectToDatabase();
+    const items = await db.collection('secondChanceItems')
+      .find(query).toArray();
+
+    res.json(items);
+  } catch (error) {
+    next(error);
+  }
 });
 
 module.exports = router;
